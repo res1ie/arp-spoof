@@ -85,7 +85,6 @@ void *send_where_req(void* iter)
 void *wait_and_reply(void* iter) 
 {
 	uint32_t i=*(uint32_t*)iter;
-	printf("thisis %d\n",i);
 	std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	Ip sip=Ip(Ip_vec[senderIp[i]]);
 	Ip tip=Ip(Ip_vec[targetIp[i]]);
@@ -214,11 +213,8 @@ int main(int argc, char* argv[]) {
 		uint16_t type=((EthHdr*)packet_data)->type();
 		if(type==EthHdr::Ip4)
 		{
-			printf("this is Ip4\n");
 			uint32_t psip=ntohl(*(uint32_t*)(packet_data+0x1a));
 			uint32_t ptip=ntohl(*(uint32_t*)(packet_data+0x1e));
-			printf("%s\n",((std::string)Ip(psip)).data());
-			printf("%s\n",((std::string)Ip(ptip)).data());
 			for(int i=0;i<flowlen;i++)
 			{
 				if(Ip_vec[senderIp[i]]==psip&&Ip_vec[targetIp[i]]==ptip)
@@ -235,20 +231,18 @@ int main(int argc, char* argv[]) {
 		}
 		if(type==EthHdr::Arp)
 		{
-			printf("this is Arp\n");
 			uint32_t psip=ntohl(((EthArpPacket*)packet_data)->arp_.sip_);
 			uint32_t ptip=ntohl(((EthArpPacket*)packet_data)->arp_.tip_);
 			Mac ptmac=((EthArpPacket*)packet_data)->arp_.tmac_;
 			for(int i=0;i<flowlen;i++)
 			{
-				printf("%d\n",i);
 				bool check=false;
 				check|=Ip_vec[senderIp[i]]==psip&&Ip_vec[targetIp[i]]==ptip;
 				check|=Ip_vec[senderIp[i]]==ptip&&Ip_vec[targetIp[i]]==psip;
 				check|=Mac::nullMac()==ptmac&&Ip_vec[targetIp[i]]==psip;
 				if(check)
 				{
-					printf("haha %d\n",i);
+					printf("posion %d\n");
 					Ip sip=Ip(Ip_vec[senderIp[i]]);
 					Ip tip=Ip(Ip_vec[targetIp[i]]);
 					Mac smac=Mac_vec[senderIp[i]];
